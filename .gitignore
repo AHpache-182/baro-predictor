@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+poll.log
+.DS_Store
