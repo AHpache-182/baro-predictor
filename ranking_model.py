@@ -58,17 +58,18 @@ MIN_APPEARANCES_FOR_OWN_MEDIAN = 3  # matches eta_model's threshold for "trustwo
 BIN_WIDTH = 0.25
 RELATIVE_AGE_CAP = 3.0  # observations beyond this are lumped into one "very overdue" bin
 CATEGORY_QUOTA_WINDOW = 30  # recent visits used to estimate each category's typical per-visit count
+TOTAL_SHORTLIST_TARGET = 40  # overall shortlist size budget; matches a typical recent visit's size (~31-34)
 
 
 def _coarse_category(item_type: str | None) -> str:
-    """Baro's shop draws a roughly fixed count per broad category each visit
-    (e.g. always 3-8 Primed Mods) - fold subtypes like 'Primed Mod (Rifle)'
-    into one 'Primed Mod' bucket so quotas are estimated at that granularity."""
+    """Baro's shop draws a roughly fixed count per *subtype* each visit (e.g.
+    always 1-2 Cosmetic (Syandana), separately from 3-8 Cosmetic (Armor)) -
+    folding subtypes like 'Cosmetic (Armor)' into one broad 'Cosmetic' bucket
+    was tried first, but that let one subtype (e.g. a multi-piece armor set
+    that's always offered together) crowd out the others within the shared
+    quota. Using the full subtype as-is avoids that."""
     if not item_type:
         return "Unknown"
-    for prefix in ("Primed Mod", "Mod", "Cosmetic"):
-        if item_type.startswith(prefix):
-            return prefix
     return item_type
 
 
@@ -87,11 +88,31 @@ def _load_eligible_items(cur: sqlite3.Cursor) -> dict:
     }
 
 
-def _category_quotas(cur: sqlite3.Cursor, item_categories: dict, cutoff_visit_id: int) -> dict:
+def _category_quotas(
+    cur: sqlite3.Cursor, item_categories: dict, cutoff_visit_id: int, target_total: int = TOTAL_SHORTLIST_TARGET
+) -> dict:
     """Estimate each category's expected item count for the next visit as the
-    median count over the last CATEGORY_QUOTA_WINDOW visits strictly before
+    mean count over the last CATEGORY_QUOTA_WINDOW visits strictly before
     cutoff_visit_id (so it respects the same leakage-free boundary as the
-    hazard curve). Categories not observed in that window get quota 0."""
+    hazard curve).
+
+    Flooring every category with any recent presence to at least 1 (so rare
+    subtypes aren't permanently zeroed out - see mean-vs-median note below)
+    inflates the total well past a real visit's size once there are 40+
+    distinct subtypes in play. So quotas are allocated against a fixed
+    `target_total` budget, strongest evidence (raw mean, before rounding)
+    first: well-evidenced categories keep their full deserved quota, and
+    floor-of-1 for the weaker categories only fills whatever budget is left -
+    the least-evidenced categories are the first to drop to 0 once the
+    budget runs out, rather than every category being guaranteed forever
+    regardless of size.
+
+    Mean (not median) matters once categories get this granular: a subtype
+    that appears in, say, 8 of the last 30 visits has a *median* per-visit
+    count of 0 (more zero-visits than not), which would rank it as having
+    zero evidence even though it's a real, recurring category - just not
+    weekly.
+    """
     all_visit_ids = [v for v in _load_all_visit_ids(cur) if v < cutoff_visit_id]
     window = all_visit_ids[-CATEGORY_QUOTA_WINDOW:]
     if not window:
@@ -110,10 +131,18 @@ def _category_quotas(cur: sqlite3.Cursor, item_categories: dict, cutoff_visit_id
         if meta is not None:
             counts_per_visit[visit_id][meta["category"]] += 1
 
+    means = {cat: sum(counts_per_visit[v][cat] for v in window) / len(window) for cat in categories}
+
     quotas = {}
-    for cat in categories:
-        counts = [counts_per_visit[v][cat] for v in window]
-        quotas[cat] = round(statistics.median(counts))
+    remaining = target_total
+    for cat in sorted(means, key=lambda c: (-means[c], c)):
+        if means[cat] <= 0 or remaining <= 0:
+            quotas[cat] = 0
+            continue
+        desired = max(1, round(means[cat]))
+        granted = min(desired, remaining)
+        quotas[cat] = granted
+        remaining -= granted
     return quotas
 
 

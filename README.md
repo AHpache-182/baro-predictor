@@ -47,23 +47,29 @@ This one pools data across all ~450 items to fit a single empirical **hazard cur
 item, "how long since its last appearance, relative to its own typical gap" is turned into a
 probability of reappearing at the very next visit, using the pooled reappearance-rate pattern
 across every item's full history. On top of that, since Baro's shop draws a roughly fixed count
-per item category each visit (e.g. always 3-8 Primed Mods, never 15), the model allocates its
-shortlist per-category using a rolling historical quota, so it can't produce an implausible
-category-skewed list.
+per item *subtype* each visit (e.g. always 3-8 Primed Mods total, but also always just 1-2
+Cosmetic Syandanas specifically, separate from Cosmetic Armor's own count), the model estimates a
+per-subtype quota from a rolling window of recent visits and allocates the shortlist against a
+fixed overall budget (~40 items, matching a typical real visit's size) - well-evidenced subtypes
+keep their full deserved quota, and the long tail of rarely-seen subtypes only get a slot if
+there's budget left after that, weakest evidence dropped first. This avoids two failure modes:
+one subtype (e.g. a multi-piece armor set that's always offered together) crowding out everything
+else in a shared bucket, and the shortlist ballooning past a real visit's size by guaranteeing
+every rare subtype a slot regardless of budget.
 
 Backtested against the last 20 real visits (refitting the model with only data available before
 each one, so there's no lookahead):
 
 | Metric | Model | Random baseline |
 |---|---|---|
-| Precision @ actual visit size | 0.091 | ~0.07 |
+| Precision @ ~40-item shortlist | 0.104 | ~0.08 |
 | Recall @ top 100 candidates | 0.314 | 0.224 |
 | Recall @ top 200 candidates | 0.639 | 0.447 |
 
 **Read that honestly**: the model narrows ~450 items down to a meaningfully smaller likely set
-(40-50% better than chance at wider cutoffs), but naming the *exact* ~30 items Baro will pick has
-a low ceiling — there's genuine randomness in which specific "due" item gets chosen within a
-category that elapsed-time-based features can't fully resolve. The shortlist is a probability
+(40-50% better than chance at wider cutoffs), but naming the *exact* ~30-40 items Baro will pick
+has a low ceiling — there's genuine randomness in which specific "due" item gets chosen within a
+subtype that elapsed-time-based features can't fully resolve. The shortlist is a probability
 ranking, not a guaranteed offering list.
 
 ## Project structure
